@@ -259,7 +259,7 @@ async function executeOperation(
 ) {
   switch (operation) {
     case "query":
-      return handleQuery(collection, args, objectIdMode, signal);
+      return handleQuery(collection, args, objectIdMode, allowServerJs, signal);
     case "aggregate":
       return handleAggregate(
         collection,
@@ -271,7 +271,7 @@ async function executeOperation(
         signal,
       );
     case "update":
-      return handleUpdate(collection, args, objectIdMode, signal);
+      return handleUpdate(collection, args, objectIdMode, allowServerJs, signal);
     case "serverInfo":
       return handleServerInfo(db, isReadOnlyMode, args, signal);
     case "insert":
@@ -279,7 +279,7 @@ async function executeOperation(
     case "createIndex":
       return handleCreateIndex(collection, args, objectIdMode, signal);
     case "count":
-      return handleCount(collection, args, objectIdMode, signal);
+      return handleCount(collection, args, objectIdMode, allowServerJs, signal);
     case "listCollections":
       return handleListCollections(db, args, objectIdMode, signal);
     case "convertTime":
@@ -575,6 +575,7 @@ async function handleQuery(
   collection: Collection<Document> | null,
   args: Record<string, unknown>,
   objectIdMode: ObjectIdConversionMode = "auto",
+  allowServerJs = false,
   signal?: AbortSignal,
 ) {
   if (!collection) {
@@ -584,6 +585,19 @@ async function handleQuery(
   const limit = (args.limit as number) || 10;
   const skip = (args.skip as number) || 0;
   const queryFilter = parseFilter(filter, objectIdMode);
+
+  // Server-side JavaScript ($where/$function/$accumulator) in a query filter is
+  // arbitrary code execution on the MongoDB server (and a DoS vector); reject it
+  // by default unless explicitly enabled, matching the aggregate path above.
+  if (!allowServerJs) {
+    const js = findAggOperator(queryFilter, SERVER_JS_AGG_OPERATORS);
+    if (js) {
+      throw new Error(
+        `Server-side JavaScript operator '${js}' is not allowed. Enable it with --allow-server-js or MCP_MONGODB_ALLOW_SERVER_JS=true.`,
+      );
+    }
+  }
+
   try {
     if (explain) {
       signal?.throwIfAborted();
@@ -725,6 +739,7 @@ async function handleUpdate(
   collection: Collection<Document> | null,
   args: Record<string, unknown>,
   objectIdMode: ObjectIdConversionMode = "auto",
+  allowServerJs = false,
   signal?: AbortSignal,
 ) {
   if (!collection) {
@@ -732,6 +747,18 @@ async function handleUpdate(
   }
   const { filter, update, upsert, multi } = args;
   const queryFilter = parseFilter(filter, objectIdMode);
+
+  // Server-side JavaScript ($where/$function/$accumulator) in the update filter
+  // is arbitrary code execution on the MongoDB server (and a DoS vector); reject
+  // it by default unless explicitly enabled, matching the aggregate path above.
+  if (!allowServerJs) {
+    const js = findAggOperator(queryFilter, SERVER_JS_AGG_OPERATORS);
+    if (js) {
+      throw new Error(
+        `Server-side JavaScript operator '${js}' is not allowed. Enable it with --allow-server-js or MCP_MONGODB_ALLOW_SERVER_JS=true.`,
+      );
+    }
+  }
 
   // Process update object for potential ObjectId strings
   let processedUpdate = update;
@@ -1004,6 +1031,7 @@ async function handleCount(
   collection: Collection<Document> | null,
   args: Record<string, unknown>,
   objectIdMode: ObjectIdConversionMode = "auto",
+  allowServerJs = false,
   signal?: AbortSignal,
 ) {
   if (!collection) {
@@ -1011,6 +1039,18 @@ async function handleCount(
   }
   const { query, limit, skip, hint, readConcern, maxTimeMS, collation } = args;
   const countQuery = parseFilter(query, objectIdMode);
+
+  // Server-side JavaScript ($where/$function/$accumulator) in a count filter is
+  // arbitrary code execution on the MongoDB server (and a DoS vector); reject it
+  // by default unless explicitly enabled, matching the aggregate path above.
+  if (!allowServerJs) {
+    const js = findAggOperator(countQuery, SERVER_JS_AGG_OPERATORS);
+    if (js) {
+      throw new Error(
+        `Server-side JavaScript operator '${js}' is not allowed. Enable it with --allow-server-js or MCP_MONGODB_ALLOW_SERVER_JS=true.`,
+      );
+    }
+  }
 
   try {
     // Build options object, removing undefined values
